@@ -1,0 +1,358 @@
+# Impact Dashboard — Product Requirements Document
+**Agentic Handoff Format · v5.0**
+Theory of Change Reporting · Executive Director & Head of Fundraising
+
+| Field | Value |
+|---|---|
+| Status | Draft v5.0 — incorporates third third-party critique, June 2026 |
+| Org | 20-person, ~$3M Canadian nonprofit |
+| Fiscal year | January 1 – December 31 |
+
+---
+
+## 1. What to Build
+
+A private web app for a single small nonprofit where staff manually enter program outcome data, fundraising revenue, and funder deadlines — and the Executive Director sees everything consolidated in one clean dashboard. The ED can generate one of two report templates on demand (board or funder), each covering program outcomes, fundraising progress, and upcoming deadlines, with a short ED narrative field. No spreadsheet required.
+
+---
+
+## 2. Users & Scale
+
+| Role | Description |
+|---|---|
+| **Executive Director** | Reads the dashboard; generates board and funder reports. Uses it monthly for board meetings, weekly when a funder report is due, and ad-hoc for new grant opportunities. Full read access to all data. |
+| **Head of Fundraising** | Manages funder records, revenue entries, and the funder deadline calendar. Can generate and export funder reports. Uses it weekly. Read access to program outcomes; write access to funders, revenue, and report generation. |
+| **Program staff** | Enter outcome metric data for their assigned program only, monthly or after events. No access to other programs, revenue, or funders. |
+| **Admin (builder)** | Configures programs, metrics, targets, and users. Not an org staff role — this is the person building and maintaining the tool. |
+| **Scale (hard)** | ~2 primary users (ED, Head of Fundraising), up to ~10 program staff. Single organization, single instance. No multi-tenant architecture. |
+| **Device assumption** | Web browser on laptop or desktop. Mobile-responsive is sufficient; no native app. |
+| **Data volume** | 3–10 programs, 5–20 metrics each, monthly entries. Well within a lightweight database. |
+
+---
+
+## 3. User Story
+
+> As the Executive Director, I want to open a single tool and immediately see how all our programs are performing against their Theory of Change targets, where our fundraising stands, and which funder deadlines are coming up — so I can generate an accurate board or funder report in under 30 minutes, without chasing data across multiple systems.
+
+---
+
+## 4. Walkthrough (Step by Step)
+
+### Flow A — ED: Monthly Board Report
+
+1. ED logs in and lands on the dashboard.
+2. Dashboard shows: program outcome metrics (actual vs. target), fundraising revenue vs. goal, and upcoming funder deadlines. Off-track items are flagged in red.
+3. ED clicks "Generate Report" and selects **Board Report** and a reporting period (e.g. May 2026).
+4. A report preview appears. ED fills in the optional "ED Notes" field (free text, max ~300 words).
+5. ED exports as PDF or prints. Report is clean enough to hand directly to a board member.
+6. **Error path:** If any program has missing data for the selected period, the report shows "No data entered" in that cell — never blank, never zero.
+
+### Flow B — ED or Head of Fundraising: Funder Report
+
+1. ED or Head of Fundraising identifies an upcoming funder deadline on the dashboard or funder list.
+2. Either user navigates to `/report`, selects **Funder Report**, selects the relevant funder and reporting period.
+3. Report pre-populates with data for the program(s) linked to that funder only — not all programs.
+4. User fills in the optional "ED Notes" field.
+5. User exports as PDF.
+6. **Error path:** If the selected funder has no linked programs, the system blocks export and prompts the user to link at least one program first.
+
+### Flow C — Head of Fundraising: Revenue Entry & Funder Management
+
+1. Head of Fundraising logs in and navigates to `/revenue` or `/funders`.
+2. On `/revenue`: two distinct actions are available — (a) enter an actual revenue amount for a funder/category and period; (b) set or update a revenue target for a funder/category, which creates a new `revenue_targets` row with an `effective_from` date. These are separate operations in the UI. Actuals and targets are not entered on the same form row.
+3. A previously submitted revenue entry can be edited by the Head of Fundraising at any time. Edits overwrite the previous value; the system logs `updated_by` and `updated_at` on the record.
+4. On `/funders`: creates or edits a funder record (name, grant amount, renewal date, report due date, status, linked programs).
+5. Changes are immediately reflected on the ED dashboard.
+6. **Error path:** Submitting a revenue entry with no period selected is blocked with a field-level error.
+
+### Flow D — Admin: System Configuration
+
+1. Admin logs into `/admin`.
+2. **Programs:** Creates a program (name, description, active/inactive). Editing a program name does not delete historical entries.
+3. **Metrics:** For each program, adds a metric (name, unit, target period, off-track threshold) and an initial target value with an `effective_from` date in a single atomic operation — both records are created together or neither is. The admin UI must not allow a metric to be saved without a corresponding initial `metric_targets` row. This is enforced at the application layer; the database should also enforce it if the stack supports deferrable foreign key constraints. Deleting a metric is blocked if it has existing entries — admin must deactivate instead.
+4. **Users:** Creates a user (email, password, role). For staff role, assigns exactly one program. Role cannot be changed after creation without explicit confirmation step.
+5. **Targets:** Creates a new `metric_targets` row with an `effective_from` date. Previous targets are preserved — historical periods continue to use the target that was in effect at the time. Targets cannot be backdated to a period that already has entries.
+6. **Error path:** Creating a staff user without assigning a program is blocked. Creating a metric without a target value is blocked.
+
+### Flow E — Staff: Program Data Entry
+
+1. Staff member logs in and is taken directly to their program's entry form — no other navigation available.
+2. Enters metric values for the current period.
+3. Submits. Data is immediately visible on the ED dashboard.
+4. **Error path:** Leaving a required metric field blank blocks submission with a field-level error. Staff cannot edit a previously submitted entry — they must contact admin.
+
+---
+
+## 5. Screens
+
+Exactly nine screens in v1. If a feature isn't reachable from one of these, it is not in v1.
+
+| # | Route | Audience | Purpose |
+|---|---|---|---|
+| 1 | `/login` | All users | Username + password login. Redirects to role-appropriate landing. |
+| 2 | `/dashboard` | ED only | Program outcomes, fundraising progress, funder deadline calendar. Off-track items flagged. |
+| 3 | `/report` | ED, Head of Fundraising | Report type selector (board/funder), period selector, ED Notes field, export button. |
+| 4 | `/funders` | ED, Head of Fundraising | List of funders with status, grant amounts, and upcoming deadlines flagged by window. |
+| 5 | `/funders/[id]` | ED, Head of Fundraising | Single funder record: edit details, link/unlink programs, view deadlines. |
+| 6 | `/revenue` | Head of Fundraising | Enter and edit revenue actuals and targets by funder/category and period. |
+| 7 | `/programs/[id]/entry` | Staff (program-specific) | Data entry form for one program's outcome metrics for the current period. |
+| 8 | `/admin` | Admin (builder) | Four sub-sections: Programs, Metrics, Users, Targets. See Flow D for full spec. |
+| 9 | `/admin/[section]` | Admin (builder) | Individual admin sub-section (programs, metrics, users, targets) rendered as sub-page. |
+
+---
+
+## 6. Done Means
+
+### Functional (testable by running the app)
+- [ ] ED can log in and see program outcomes, fundraising revenue, and funder deadlines on one screen.
+- [ ] ED can generate a Board Report for a selected period: shows all programs' outcomes, org-wide revenue summary, all funder deadlines, and an ED Notes field. Exports as PDF.
+- [ ] ED or Head of Fundraising can generate a Funder Report for a selected funder and period: shows only that funder's linked programs' outcomes, revenue for that funder, and the funder's deadline. Exports as PDF.
+- [ ] Both report types show "No data entered" for any metric with no entry in the selected period — never blank, never zero.
+- [ ] A funder report cannot be exported if the selected funder has no linked programs — system blocks and prompts.
+- [ ] Head of Fundraising can enter revenue actuals and set versioned revenue targets separately on `/revenue`. Actuals are editable and edits are logged with updated_by and updated_at. Setting a new target creates a new revenue_targets row without overwriting previous targets.
+- [ ] Funder records show deadlines flagged by window: red (≤30 days), amber (31–60), yellow (61–90), none (>90).
+- [ ] Off-track program metrics are flagged visually on the dashboard per their configured threshold.
+- [ ] Revenue on-track/at-risk/off-track status is calculated using org-wide constants (80% / 60%), separate from per-metric thresholds.
+- [ ] Staff users land directly on their program entry form and cannot navigate elsewhere.
+- [ ] Admin can create programs, metrics (with targets and thresholds), and users. Deleting a metric with existing entries is blocked.
+- [ ] All periods are anchored to the fiscal year January 1 – December 31. Annual metrics sum monthly entries from Jan 1 to Dec 31.
+- [ ] Monthly metrics show "No data entered" in a report if no entry exists for that specific month.
+- [ ] Annual metrics show the YTD actual if any entries exist for the fiscal year to date; show "No data entered" only if zero entries exist for the entire fiscal year to date.
+
+### Behavioural (testable by living with it)
+- [ ] ED prepares the next monthly board report using only this tool — no spreadsheet opened.
+- [ ] No funder deadline is missed in the first 3 months of use.
+- [ ] When a new grant opportunity arrives, the ED can pull a funder report the same day.
+
+---
+
+## 7. Out of Scope
+
+These are explicitly not being built. If this list shrinks, flag it as a scope change.
+
+- Automated data integrations (Google Sheets, CRM, Eventbrite) — manual entry only in v1
+- Custom report builder or additional templates beyond board and funder
+- Multi-organization / multi-tenant support
+- AI-generated narrative — ED Notes is a free-text field, not AI-drafted
+- Donor-facing portals or client-facing views
+- Budget / expense tracking — finance system is separate
+- Automated email or SMS deadline alerts — user must open the dashboard
+- Mobile native app — web-responsive browser is sufficient
+- For-profit companies, large NGOs, government orgs, activist or pure advocacy organizations
+- Staff editing previously submitted metric entries
+
+---
+
+## 8. Future Extensions
+
+Noted here so the v1 build compartmentalizes these parts cleanly. No code spent on them now.
+
+- **Data integrations** — Google Sheets CSV import, CRM sync (Bloomerang, Little Green Light, Salesforce), Eventbrite
+  - Design data entry forms so fields could be pre-populated by an import later
+- **Automated deadline alerts** — email or SMS notifications for upcoming funder deadlines
+- **Foundation-mandated reporting** — some funders require a specific format or platform; future module
+- **Multi-org version** — extend to serve similar small nonprofits if v1 proves out
+- **AI-assisted narrative** — auto-draft ED Notes from the structured data
+- **Staff entry corrections** — allow staff to amend a submitted entry within a grace period
+
+---
+
+## 9. Database Schema
+
+The following tables are required. Field-level types TBD by the coding agent based on stack; structure and relationships are fixed.
+
+### programs
+| Field | Description |
+|---|---|
+| id | Primary key |
+| name | Program name (e.g. "Employment Support") |
+| description | Short text |
+| is_active | Boolean — inactive programs are hidden from entry forms but historical data is preserved |
+
+### metrics
+| Field | Description |
+|---|---|
+| id | Primary key |
+| program_id | Foreign key → programs |
+| name | Metric name (e.g. "Clients served") |
+| unit | Unit label (e.g. "people", "%", "$") |
+| target_period | Enum: monthly \| annual |
+| off_track_threshold | Decimal (0–1). Metric is off-track when actual < target × threshold. Default: 0.80 |
+| is_active | Boolean — deactivated instead of deleted when entries exist |
+
+> **Design decision (resolves OQ-3):** Target values are stored in a separate `metric_targets` table, not on `metrics`. This means targets are versioned by effective date — a target updated in July does not overwrite the target that applied in March. Historical reporting is always accurate to the target that was in effect at the time. This is the correct default regardless of whether targets change mid-year.
+
+### metric_targets
+| Field | Description |
+|---|---|
+| id | Primary key |
+| metric_id | Foreign key → metrics |
+| target_value | Numeric target |
+| effective_from | Date — this target applies from this date forward |
+| set_by | Foreign key → users (admin only) |
+| set_at | Timestamp |
+
+> When evaluating a metric for a given period, the system uses the `metric_targets` row with the latest `effective_from` date that is on or before the period start date.
+
+### metric_entries
+| Field | Description |
+|---|---|
+| id | Primary key |
+| metric_id | Foreign key → metrics |
+| period | Date — stored as first day of month (e.g. 2026-06-01) |
+| actual_value | Numeric |
+| entered_by | Foreign key → users |
+| entered_at | Timestamp |
+
+### funders
+| Field | Description |
+|---|---|
+| id | Primary key |
+| name | Funder organization name |
+| grant_amount | Numeric |
+| status | Enum: active \| prospect \| lapsed |
+| renewal_date | Date |
+| report_due_date | Date |
+| notes | Free text |
+
+### funder_programs
+| Field | Description |
+|---|---|
+| funder_id | Foreign key → funders |
+| program_id | Foreign key → programs |
+
+### revenue_targets
+
+> **Design decision:** Revenue targets are versioned separately from actuals, mirroring the `metric_targets` approach. The Head of Fundraising sets an annual or monthly revenue target per funder (or category), and that target is looked up at report time using the same effective-date logic as metric targets. Monthly `revenue_entries` rows carry only actuals.
+
+| Field | Description |
+|---|---|
+| id | Primary key |
+| funder_id | Foreign key → funders (nullable for general donation targets) |
+| category | Enum: grant \| donation \| other |
+| target_amount | Numeric |
+| target_period | Enum: monthly \| annual |
+| effective_from | Date — this target applies from this date forward |
+| set_by | Foreign key → users |
+| set_at | Timestamp |
+
+> When evaluating revenue for a given period, the system uses the `revenue_targets` row with the latest `effective_from` date that is on or before the period start date, matching on funder_id and category.
+
+### revenue_entries
+| Field | Description |
+|---|---|
+| id | Primary key |
+| funder_id | Foreign key → funders (nullable for general donations) |
+| category | Enum: grant \| donation \| other |
+| period | Date — stored as first day of month |
+| actual_amount | Numeric |
+| entered_by | Foreign key → users |
+| entered_at | Timestamp |
+| updated_by | Foreign key → users — null if never edited after initial entry |
+| updated_at | Timestamp — null if never edited after initial entry |
+
+### users
+| Field | Description |
+|---|---|
+| id | Primary key |
+| email | Login identifier |
+| password_hash | bcrypt hash — never plaintext |
+| role | Enum: ed \| fundraising \| staff \| admin |
+| program_id | Foreign key → programs — required when role = staff, null otherwise |
+
+---
+
+## 10. External Service Contracts
+
+No external services (LLMs, third-party APIs) are used in v1. AI-assisted narrative is a future extension (§8). PDF generation uses print-to-PDF or a server-side rendering library — no external service required.
+
+---
+
+## 11. Domain Rules
+
+| Rule | Definition |
+|---|---|
+| **Program off-track flag** | A metric is flagged off-track when `actual_value < (target_value × off_track_threshold)`. Threshold is configured per metric by admin. Default: 0.80. |
+| **Revenue target lookup** | For any funder/category and period, the applicable revenue target is the `revenue_targets` row with the latest `effective_from` date that is on or before the period start date, matching on funder_id and category. If no target exists, revenue cannot be given a status and the dashboard shows a configuration warning. |
+| **Revenue status** | Revenue uses org-wide fixed constants, independent of per-metric thresholds. On-track: actual ≥ 80% of applicable target. At-risk: 60–79%. Off-track: below 60%. These constants are not user-configurable in v1. |
+| **Deadline windows** | Due ≤30 days = red. 31–60 days = amber. 61–90 days = yellow. >90 days = no flag on dashboard. Calculated from today's date at page load. |
+| **Missing data — monthly metrics** | A monthly metric shows "No data entered" in a report if no `metric_entries` row exists for that specific month. Never zero, never blank. |
+| **Missing data — annual metrics** | An annual metric shows the YTD actual (sum of all monthly entries Jan 1 to end of selected period) if any entries exist for the fiscal year to date. Shows "No data entered" only if zero entries exist for the entire fiscal year to date. |
+| **Fiscal year** | January 1 – December 31. All annual metric calculations aggregate monthly entries from Jan 1 to Dec 31 of the selected year. A report period of "June 2026" is month 6 of fiscal year 2026. |
+| **Period storage** | All periods stored as the first day of the month (e.g. 2026-06-01). The UI may display as "June 2026" but the underlying value is always a date. |
+| **Target lookup** | For any metric and period, the applicable target is the `metric_targets` row with the latest `effective_from` date that is on or before the period start date. If no target exists for a metric, it cannot be flagged as off-track and the dashboard shows a configuration warning. |
+| **Annual vs. monthly targets** | Monthly metrics: compare actual for that month to the applicable target. Annual metrics: compare the YTD sum of all monthly entries (Jan–current month) to the applicable target, shown as progress-to-date. |
+| **Funder report scope** | A funder report includes only programs linked via funder_programs. If no programs are linked, export is blocked. |
+| **Board report deadline scope** | A board report shows all active funders and their next deadline date, sorted by proximity. Deadline window colouring (red/amber/yellow) applies. Funders with deadlines beyond 90 days are included but shown without a colour flag. This is intentional — the board should see the full funder calendar, not just what is imminent. |
+
+---
+
+## 12. Build Order
+
+Build in this sequence. Do not move to the next phase until the previous one passes its acceptance criteria.
+
+### Phase 1 — Foundation & Admin
+- Database schema (all tables in §9)
+- User auth: login, session, role-based routing
+- `/admin` with four sub-sections: Programs, Metrics, Users, Targets (see Flow D)
+
+*Acceptance: Admin can create a program with 3 metrics (including off-track thresholds), set an initial target via metric_targets, create a staff user assigned to that program, create a Head of Fundraising user, and log in as each. Attempting to delete a metric blocks if entries exist. Updating a target creates a new metric_targets row without overwriting the previous one.*
+
+### Phase 2 — Data Entry
+- Staff entry form (`/programs/[id]/entry`) — staff see only their program
+- Revenue entry screen (`/revenue`) — Head of Fundraising only
+- Funder management (`/funders`, `/funders/[id]`) — ED and Head of Fundraising
+
+*Acceptance: A staff user submits a monthly metric value and it appears in the database with correct period, metric_id, and entered_by. Head of Fundraising enters a revenue actual and sets a revenue target as separate operations. A funder record is created and linked to a program.*
+
+### Phase 3 — Dashboard
+- ED dashboard (`/dashboard`): program outcomes vs. targets, revenue status, funder deadline calendar
+- Off-track flags and revenue status per domain rules (§11)
+- Deadline window colouring per domain rules (§11)
+
+*Acceptance: ED logs in and sees all three data domains with test data. Off-track metrics flagged correctly. Revenue status calculated using fixed constants. Funder deadlines colour-coded by window.*
+
+### Phase 4 — Reporting
+- `/report` screen: report type selector (board/funder), period selector, funder selector (funder report only), ED Notes field, export button
+- Board report template: all active programs' outcomes, org-wide revenue summary, all funder deadlines, ED Notes
+- Funder report template: linked programs' outcomes only, that funder's revenue, that funder's deadline, ED Notes
+- "No data entered" shown for any metric with no entry in the period
+- Export blocked if funder report selected with no linked programs
+
+*Acceptance: ED generates a board report for a test period. ED and Head of Fundraising each generate a funder report. All export as clean PDF. A period with missing data shows "No data entered." A funder with no linked programs cannot be exported — system shows a prompt.*
+
+---
+
+## Open Questions (Block Build)
+
+These must be answered before Phase 1 begins.
+
+| ID | Question |
+|---|---|
+| OQ-1 | What are the specific Theory of Change outcome metrics for each program? Required to populate the metrics table. (Examples: "Clients served," "Employment placements," "Housing secured.") |
+| OQ-2 | How many programs are there, and does each have its own metric set or a shared framework? |
+| OQ-3 | ~~Are targets versioned or fixed?~~ **Resolved:** targets are versioned via the metric_targets table. See §9. |
+| OQ-4 | Technology stack choice — must be confirmed before build begins. |
+| OQ-5 | Are there funder-mandated report templates the export format must match? If yes, those templates take precedence over the standard funder report template defined here. |
+
+---
+
+## Report Template Specs
+
+### Board Report — section order
+1. Organization name, report period, date generated
+2. ED Notes (free-text field, max 300 words — optional)
+3. Program Outcomes — one section per active program: metric name, target, actual, status flag
+4. Fundraising Summary — revenue by category (grant / donation / other), target vs. actual, overall status
+5. Funder Deadlines — all active funders sorted by next deadline date (ascending). Deadline window colouring applies (red/amber/yellow for ≤90 days); funders beyond 90 days are listed without a colour flag. **Intentional:** the board sees the full funder calendar, not just what is imminent.
+
+### Funder Report — section order
+1. Organization name, funder name, report period, date generated
+2. ED Notes (free-text field, max 300 words — optional)
+3. Program Outcomes — one section per program linked to this funder: metric name, target, actual, status flag
+4. Funding Summary — revenue entries for this funder, target vs. actual
+5. Next Deadline — renewal date and report due date for this funder
+
+---
+
+*Impact Dashboard PRD v5.0 · Agentic Handoff Format · June 2026*

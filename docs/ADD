@@ -1,0 +1,653 @@
+# Impact Dashboard — Architecture Design Document
+**v2.0 · June 2026 · Companion to PRD v5.0**
+
+| Field | Value |
+|---|---|
+| Status | Draft — stack selected, pre-build |
+| Companion PRD | Impact Dashboard PRD v5.0 |
+| Stack | Next.js 14 (App Router) + PostgreSQL 15 + Prisma |
+| Hosting | Railway (app + database) |
+| Audience | Developer building the tool; ED and product owner for review |
+
+---
+
+## Before the Sections
+
+### Binding Constraint
+
+The binding constraint is **data integrity across versioned targets**. Every meaningful number in the system — whether a metric is off-track, whether revenue is at-risk, what a historical report shows — depends on looking up the right target for the right period. If the effective-date lookup logic is wrong anywhere, reports silently show incorrect status flags with no visible error. Every architecture decision around transactions, the domain logic layer, and the prohibition on overwriting target rows exists to protect this.
+
+### Changes from the PRD
+
+| PRD says | Architecture says | Why |
+|---|---|---|
+| PDF generation uses "print-to-PDF or a server-side rendering library" | `@react-pdf/renderer` specifically, via a dedicated `/api/report/pdf` server-side route | Eliminates browser print dialog; gives full layout control; no external service dependency |
+| Stack TBD (OQ-4) | Next.js 14 + PostgreSQL 15 + Prisma + Railway | Resolves OQ-4. Single-repo full-stack eliminates a separate API server; Railway eliminates devops overhead |
+
+---
+
+## 1. System Overview
+
+Impact Dashboard is a single-process, single-database web application. A Next.js 14 server handles both page rendering and data mutations; PostgreSQL (via Prisma ORM) is the sole data store; NextAuth.js enforces session-based authentication with role-based route protection at the middleware layer. There are no background workers, no queues, and no external API calls in v1. The one exception to synchronous page rendering is PDF export, which is a server-side API route that builds a report from a database query, renders it with `@react-pdf/renderer`, and streams the binary result to the browser.
+
+---
+
+## 2. Topology
+
+```
+┌─────────────────────────────────────┐
+│            Browser                  │
+│  (web UI — laptop/desktop only)     │
+└──────────────┬──────────────────────┘
+               │ HTTPS
+               ▼
+┌─────────────────────────────────────┐
+│      Next.js 14 App Server          │
+│            (Railway)                │
+│                                     │
+│  ┌─────────────────────────────┐    │
+│  │  middleware.ts              │    │
+│  │  (auth + role routing)      │    │
+│  └─────────────────────────────┘    │
+│  ┌──────────────┐ ┌───────────────┐ │
+│  │  App Router  │ │  API Routes   │ │
+│  │  (9 screens) │ │  /api/report/ │ │
+│  │              │ │  pdf          │ │
+│  └──────┬───────┘ └───────┬───────┘ │
+│         │                 │         │
+│  ┌──────▼─────────────────▼───────┐ │
+│  │         Prisma ORM             │ │
+│  └────────────────┬───────────────┘ │
+└───────────────────┼─────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────┐
+│         PostgreSQL 15               │
+│            (Railway)                │
+└─────────────────────────────────────┘
+```
+
+**Processes:** One — the Next.js app server. Stateless between requests (session state lives in the encrypted cookie; all persistent data in PostgreSQL).
+
+**Data stores:** One — PostgreSQL 15 on Railway. Prisma manages all access.
+
+**External services:** None in v1.
+
+**Clients:** Web browser only. Mobile-responsive but no native app.
+
+---
+
+## 3. Module / Code Structure
+
+```
+impact-dashboard/
+  app/                          ← Next.js App Router root (HTTP layer only)
+    (auth)/
+      login/page.tsx            ← Screen 1: /login
+    (ed)/
+      dashboard/page.tsx        ← Screen 2: /dashboard
+      report/page.tsx           ← Screen 3: /report
+      funders/
+        page.tsx                ← Screen 4: /funders
+        [id]/page.tsx           ← Screen 5: /funders/[id]
+    (fundraising)/
+      revenue/page.tsx          ← Screen 6: /revenue
+    (staff)/
+      programs/[id]/
+        entry/page.tsx          ← Screen 7: /programs/[id]/entry
+    (admin)/
+      admin/
+        page.tsx                ← Screen 8: /admin
+        [section]/page.tsx      ← Screen 9: /admin/[section]
+    api/
+      auth/[...nextauth]/route.ts
+      report/pdf/route.ts       ← PDF export endpoint
+  lib/
+    auth.ts                     ← NextAuth config and session type extensions
+    prisma.ts                   ← Prisma client singleton
+    domain/                     ← Business logic (pure functions, no DB calls)
+      metrics.ts                ← isOffTrack()
+      revenue.ts                ← revenueStatus(), orgRevenueStatus()
+      deadlines.ts              ← deadlineWindow()
+      targets.ts                ← lookupTarget()
+      periods.ts                ← toPeriodDate()
+  prisma/
+    schema.prisma               ← Database schema (single source of truth)
+    migrations/                 ← Auto-generated SQL migration files
+    seed.ts                     ← Test data for development
+  components/
+    reports/
+      BoardReport.tsx           ← @react-pdf/renderer board report component
+      FunderReport.tsx          ← @react-pdf/renderer funder report component
+  middleware.ts                 ← Role-based route protection (project root)
+  public/                       ← Static assets
+```
+
+**Module rules:**
+
+- `app/` modules are thin — validate input, call `lib/`, format response. No business logic lives here.
+- `lib/domain/` functions are pure — they accept plain data and return a result. No database calls, no side effects. This makes them independently testable.
+- `lib/domain/` never imports from `app/`. It may import from `lib/` siblings only for shared types.
+- `components/reports/` uses `@react-pdf/renderer` primitives only — no HTML elements, no Tailwind classes.
+- `middleware.ts` is the only place role-to-route enforcement lives. It is not duplicated in individual page components.
+
+---
+
+## 4. Data Architecture
+
+### 4.1 Authoritative store
+
+PostgreSQL 15 is the single authoritative data store. There is no cache, no secondary store, and no derived data store in v1. All reads go to the database.
+
+### 4.2 Schema overview
+
+The full field-level schema is in §9 of the PRD and is definitive. The Prisma `schema.prisma` file is the implementation source of truth — if they conflict, flag it. Key tables and their relationships:
+
+```
+programs ──< metrics ──< metric_targets
+                    └──< metric_entries
+
+funders ──< funder_programs >── programs
+        └──< revenue_targets
+        └──< revenue_entries
+
+users (roles: ed | fundraising | staff | admin)
+  └── program_id (required when role = staff)
+```
+
+### 4.3 Critical data patterns
+
+**Versioned targets (metric and revenue).** Target values are never overwritten. Each change creates a new row with an `effective_from` date. Historical periods always resolve to the target that was in effect at that time. This applies to both `metric_targets` and `revenue_targets`.
+
+**Effective-date lookup.** The standard query for finding the applicable target for any period:
+
+```typescript
+await prisma.metricTarget.findFirst({
+  where: {
+    metricId: id,
+    effectiveFrom: { lte: periodStartDate },
+  },
+  orderBy: { effectiveFrom: 'desc' },
+});
+```
+
+For revenue targets, the same effective-date pattern applies with one additional rule: `funder_id` is nullable (general donations have no funder). SQL `NULL = NULL` evaluates to false, so a standard equality join will silently fail to match general donation targets. The lookup must branch on whether `funder_id` is present:
+
+```typescript
+// Funder-specific target
+await prisma.revenueTarget.findFirst({
+  where: {
+    funderId: funderId,          // non-null — standard equality match
+    category: category,
+    effectiveFrom: { lte: periodStartDate },
+  },
+  orderBy: { effectiveFrom: 'desc' },
+});
+
+// General donation target (funder_id IS NULL)
+await prisma.revenueTarget.findFirst({
+  where: {
+    funderId: null,              // Prisma translates this to IS NULL — not = NULL
+    category: category,
+    effectiveFrom: { lte: periodStartDate },
+  },
+  orderBy: { effectiveFrom: 'desc' },
+});
+```
+
+Passing `null` into a Prisma `where` clause correctly generates `IS NULL` in SQL. This is Prisma-specific behaviour — do not replicate this pattern with a raw query driver without explicit `IS NULL` handling. This logic lives in `lib/domain/targets.ts` and must be tested with a general donation fixture before Phase 3.
+
+**Period storage.** All periods stored as the first day of the month at midnight UTC (e.g. `2026-06-01T00:00:00.000Z`). The UI displays "June 2026" — the conversion happens in `lib/domain/periods.ts`.
+
+**Atomic metric + target creation.** A metric row and its first `metric_targets` row are created together or not at all:
+
+```typescript
+await prisma.$transaction([
+  prisma.metric.create({ data: metricData }),
+  prisma.metricTarget.create({ data: targetData }),
+]);
+```
+
+**Revenue entry edits.** `revenue_entries` rows may be updated after initial creation. On update, `updated_by` and `updated_at` are written. The original `entered_by` / `entered_at` are preserved.
+
+**Org-wide revenue aggregation.** Per-funder/category revenue status (on-track / at-risk / off-track) is calculated row by row using `revenueStatus()`. The org-wide summary shown on the ED dashboard and in board report section 4 rolls these up as follows: sum all `revenue_entries.actual_amount` for the period across all active funder/category pairs; sum all applicable `revenue_targets.target_amount` for the same period; apply the same 80%/60% thresholds to the totals. This is implemented as a separate function, `orgRevenueStatus(entries[], targets[])`, in `lib/domain/revenue.ts`. It does not weight by funder or category — every dollar counts equally toward the org total.
+
+**Domain logic function reference.** All business rule functions live in `lib/domain/`. They are pure — no database calls, no side effects.
+
+| File | Function | Input → Output | PRD rule |
+|---|---|---|---|
+| `metrics.ts` | `isOffTrack(actual, target, threshold)` | numbers → boolean | `actual < target × threshold` |
+| `revenue.ts` | `revenueStatus(actual, target)` | numbers → `'on-track' \| 'at-risk' \| 'off-track'` | ≥80% = on-track; 60–79% = at-risk; <60% = off-track |
+| `revenue.ts` | `orgRevenueStatus(entries[], targets[])` | arrays → `'on-track' \| 'at-risk' \| 'off-track'` | Summed actuals vs. summed targets; same thresholds |
+| `deadlines.ts` | `deadlineWindow(dueDate, today)` | dates → `'red' \| 'amber' \| 'yellow' \| null` | ≤30 days = red; 31–60 = amber; 61–90 = yellow; >90 = null |
+| `targets.ts` | `lookupTarget(targets[], period, funderId?)` | array + date → target row or null | Latest `effective_from` ≤ period start; branches on null `funderId` |
+| `periods.ts` | `toPeriodDate(year, month)` | integers → Date | First day of month at midnight UTC |
+
+### 4.4 What is never stored
+
+- Plaintext passwords — bcrypt hash only (`password_hash` column).
+- Derived or cached values — all status flags (off-track, at-risk, etc.) are computed at read time from raw data.
+
+---
+
+## 5. Request & Event Flows
+
+### 5.1 Page request (standard)
+
+All standard page requests are synchronous Server Component renders. Example: ED loads `/dashboard`.
+
+```
+1. Browser GETs /dashboard
+2. middleware.ts reads session cookie → verifies role = 'ed' → passes
+3. dashboard/page.tsx (Server Component) runs:
+   a. fetchProgramOutcomes() → Prisma query → PostgreSQL
+   b. fetchRevenueData() → Prisma query → PostgreSQL (entries + targets, all funder/categories)
+   c. fetchFunderDeadlines() → Prisma query → PostgreSQL
+4. Domain logic applied to results:
+   a. isOffTrack() called per metric entry
+   b. revenueStatus() called per funder/category row (per-funder status badges)
+   c. orgRevenueStatus() called once on all entries + targets (org-wide summary figure)
+   d. deadlineWindow() called per funder
+5. HTML rendered server-side and streamed to browser
+```
+
+### 5.2 PDF export
+
+The one async-feeling flow (it's still synchronous — just slower).
+
+```
+1. User submits /report form (report type, period, funder id, ED notes)
+2. Browser POSTs to /api/report/pdf
+3. middleware.ts verifies session and role
+4. pdf/route.ts:
+   a. Validates request body
+   b. If funder report: checks funder has linked programs → 422 if not
+   c. Runs report query via Prisma
+   d. Passes result to BoardReport.tsx or FunderReport.tsx
+   e. @react-pdf/renderer renders the component tree to PDF bytes
+   f. Returns binary stream with Content-Type: application/pdf
+5. Browser receives PDF → download or new tab
+```
+
+### 5.3 Data mutation (example: staff submits metric entry)
+
+```
+1. Staff submits entry form at /programs/[id]/entry
+2. Browser POSTs to /api/programs/[id]/entry (API Route)
+3. middleware.ts verifies role = 'staff' and session.programId matches [id]
+4. Route handler validates fields — blank = field-level error, stop
+5. Prisma creates metric_entries row with entered_by, entered_at, period, actual_value
+6. Returns success; page redirects back to form with submitted values shown read-only
+```
+
+### 5.4 Metric creation (admin — transactional)
+
+```
+1. Admin submits metric form with target value + effective_from
+2. Server validates: both target fields required
+3. prisma.$transaction([metric.create, metricTarget.create])
+   → if either fails, both roll back
+4. Admin sees new metric in list with its initial target
+```
+
+---
+
+## 6. Interface Contracts
+
+### 6.1 Internal API routes
+
+| Route | Method | Caller | Purpose |
+|---|---|---|---|
+| `/api/auth/[...nextauth]` | GET / POST | NextAuth.js internals | Session management |
+| `/api/report/pdf` | POST | `/report` page | Generate and return PDF binary |
+
+**`/api/report/pdf` request body:**
+
+```typescript
+{
+  reportType: 'board' | 'funder';
+  period: string;          // "YYYY-MM" — converted to period date server-side
+  funderId?: string;       // required when reportType = 'funder'
+  edNotes?: string;        // max 300 words, validated server-side
+}
+```
+
+**`/api/report/pdf` responses:**
+
+| Status | Meaning |
+|---|---|
+| 200 | PDF binary stream (`Content-Type: application/pdf`) |
+| 400 | Validation failure (missing required field) |
+| 401 | Not authenticated |
+| 403 | Role not permitted to generate this report type |
+| 422 | Funder report requested but funder has no linked programs |
+
+### 6.2 External services
+
+None in v1. The PRD explicitly excludes all external API integrations.
+
+### 6.3 Session contract
+
+The NextAuth session object carries:
+
+```typescript
+{
+  user: {
+    id: string;
+    role: 'ed' | 'fundraising' | 'staff' | 'admin';
+    programId: string | null;  // non-null for staff only
+  }
+}
+```
+
+`middleware.ts` and all server-side data fetches read from this object. It is the only source of identity truth at runtime.
+
+---
+
+## 7. Cross-Cutting Patterns
+
+### 7.1 Authentication
+
+NextAuth.js Credentials provider. On login, credentials are checked against `password_hash` (bcrypt). On success, an encrypted `httpOnly`, `Secure` session cookie is set with a 30-day TTL. No tokens are exposed to client-side JavaScript.
+
+### 7.2 Authorisation
+
+`middleware.ts` at the project root is the single enforcement point. It runs before every request — both page loads and API Route calls. Logic:
+
+- No valid session → redirect to `/login`
+- Valid session, wrong role for route → redirect to `/login`
+- Staff role → redirect to `/programs/[session.programId]/entry` regardless of requested route
+- Staff accessing `/programs/[id]/entry` where `[id] ≠ session.programId` → redirect to own program
+
+**Role-to-route table (authoritative).** This table is the source of truth for `middleware.ts` implementation. Every row is an enforced rule, not a UI convention.
+
+| Route pattern | Permitted roles | Notes |
+|---|---|---|
+| `/login` | All (unauthenticated) | Redirect to role landing if already authenticated |
+| `/dashboard` | `ed` | — |
+| `/report` | `ed`, `fundraising` | — |
+| `/funders` | `ed`, `fundraising` | — |
+| `/funders/[id]` | `ed`, `fundraising` | — |
+| `/revenue` | `fundraising` | — |
+| `/programs/[id]/entry` | `staff` | `[id]` must match `session.programId`; redirect own program if mismatch |
+| `/admin` | `admin` | — |
+| `/admin/[section]` | `admin` | — |
+| `/api/report/pdf` | `ed`, `fundraising` | API Route — middleware enforces before handler runs |
+| `/api/*` (all other routes) | Checked per route | No API route is unauthenticated in v1 |
+
+**Server Actions are not used for mutations.** See ADR-007. All form submissions POST to API Routes. This ensures middleware runs on every write operation without requiring per-action session checks.
+
+### 7.3 Error handling
+
+**Field-level errors** (missing required input): returned as structured validation errors, displayed inline beside the field. Never as a page-level toast or alert.
+
+**Business rule violations** (e.g. deleting a metric with existing entries, funder report with no linked programs): returned as a specific error message. The UI surfaces the message and the correct next action (e.g. "Deactivate instead").
+
+**Missing data in reports**: never blank, never zero. Display "No data entered" per PRD §11 rules.
+
+**Unexpected server errors**: return a generic error page. Do not expose stack traces.
+
+### 7.4 Secrets and environment variables
+
+| Variable | Purpose | Where set |
+|---|---|---|
+| `DATABASE_URL` | Prisma connection string | Railway (injected automatically) |
+| `NEXTAUTH_SECRET` | Session cookie encryption key | Railway (manual — generate with `openssl rand -base64 32`) |
+| `NEXTAUTH_URL` | App's public URL | Railway (manual) |
+
+No secrets in source code. No `.env` files committed to the repository.
+
+### 7.5 Passwords
+
+Stored as bcrypt hashes only. The `password_hash` column on the `users` table. Plaintext is never logged, stored, or transmitted after the login request.
+
+---
+
+## 8. State & Consistency
+
+### 8.1 Transactional operations
+
+Two operations require atomicity — both rows created or neither:
+
+1. **Metric + initial target creation** (`prisma.$transaction`)
+2. No other multi-table writes require a transaction in v1.
+
+### 8.2 Eventual consistency
+
+Not applicable. This is a single-database, synchronous application. All reads reflect the latest committed write.
+
+### 8.3 Immutable records
+
+`metric_targets` and `revenue_targets` rows are never updated or deleted. New rows are always inserted. This is enforced at the application layer — no `UPDATE` or `DELETE` is issued against these tables after creation.
+
+`metric_entries` rows are also immutable after creation (staff cannot edit; admin deactivates metrics rather than deleting them).
+
+`revenue_entries` are the one exception — they may be updated by the Head of Fundraising. The update writes `updated_by` and `updated_at` without touching `entered_by` or `entered_at`.
+
+---
+
+## 9. Security Architecture
+
+### 9.1 Trust boundaries
+
+- **Browser → Next.js server:** HTTPS only (Railway enforces this). All session validation happens server-side. Client-side role checks are UX only — not security.
+- **Next.js server → PostgreSQL:** Internal Railway network. Connection string in environment variable only.
+- **No browser-to-database path:** The browser never touches the database directly. All data access goes through Next.js server-side code.
+
+### 9.2 Threat model (relevant threats at this scale)
+
+| Threat | Mitigation |
+|---|---|
+| Credential stuffing / brute force | bcrypt slows hash comparison; Railway can add rate limiting at the edge if needed |
+| Session hijacking | `httpOnly` + `Secure` cookie; 30-day TTL; NEXTAUTH_SECRET rotatable |
+| Horizontal privilege escalation (staff accessing another program) | middleware.ts checks `session.programId === route [id]` on every request |
+| Vertical privilege escalation (staff reaching admin routes) | middleware.ts role-to-route table; no role elevation path in the UI |
+| SQL injection | Prisma parameterises all queries; no raw SQL in v1 |
+| Plaintext password exposure | bcrypt only; never logged |
+
+### 9.3 Out of scope
+
+- MFA / 2FA (not in PRD)
+- IP allowlisting (not warranted at this scale)
+- Penetration testing (not warranted for a ~12-user internal tool)
+- GDPR / PIPEDA compliance audit (noted as a future concern for a Canadian nonprofit but not in v1 scope)
+
+---
+
+## 10. Failure Modes
+
+> ⚠️ **Needs input:** This section covers failure handling per external dependency. This application has only one external dependency — the Railway-hosted PostgreSQL database. Failure modes for third-party APIs are not applicable in v1. The table below covers the database and the deployment platform.
+
+| Dependency | Failure mode | Behaviour | Recovery |
+|---|---|---|---|
+| PostgreSQL (Railway) | Connection unavailable | Next.js server returns 500; no data is shown | Railway restarts the DB; app reconnects automatically via Prisma connection pool |
+| Railway platform | App server down | Users see Railway's default error page | Railway auto-restart on crash; manual redeploy from GitHub if needed |
+| PDF render (`@react-pdf/renderer`) | Render throws | `/api/report/pdf` returns 500; user sees error message | Fix in code; no data loss |
+| Browser (client-side) | JavaScript error | Server-rendered HTML still displays; only interactive elements break | Next.js Server Components mean most content renders without JS |
+
+---
+
+## 11. Observability
+
+This is a ~12-user internal tool with no formal uptime commitment. Observability is kept to the minimum needed to detect and recover from problems without adding operational overhead.
+
+**Logs:** Railway captures stdout/stderr from the Next.js process automatically — no additional tooling required. The following events must be explicitly logged by the application:
+
+- Authentication failures (invalid credentials, locked-out user)
+- Unauthorised route access attempts (role mismatch caught by middleware)
+- PDF export errors (render failure or database query failure on `/api/report/pdf`)
+
+Log lines should include: timestamp, event type, user id (not email), and route. No plaintext passwords or session tokens in logs.
+
+**Uptime monitoring:** Better Uptime (free tier) configured to ping the `/login` route every 5 minutes. Alert destination: the admin's email. No on-call rotation — this is a best-effort response for a non-critical internal tool.
+
+**SLOs:** None defined. Downtime is an inconvenience, not a contractual or compliance issue.
+
+**Error tracking:** Not added in v1. If PDF export becomes heavily used for time-sensitive funder deadlines, add Sentry (free tier) at that point — it is a one-line addition to `next.config.js` and does not require an architecture change.
+
+---
+
+## 12. Deployment & Environments
+
+### 12.1 Environments
+
+| Environment | Purpose | URL |
+|---|---|---|
+| Production | Live app used by the org | Railway-assigned domain (custom domain optional) |
+| Development | Local developer machine | `localhost:3000` |
+
+> ⚠️ **Needs input:** No staging environment has been defined. For a ~12-user internal tool, a staging environment is optional but recommended before deploying changes that touch the database schema.
+
+### 12.2 Deployment process
+
+1. Developer pushes to `main` branch on GitHub.
+2. Railway detects the push and runs the build.
+3. Build runs: `npx prisma migrate deploy && npm run build`.
+4. On success, Railway swaps the running container. Zero-downtime on Railway's Hobby plan is not guaranteed — acceptable for this use case.
+5. On failure, Railway keeps the previous container running.
+
+### 12.3 Environment variables
+
+Set in the Railway dashboard. Required variables listed in §7.4. No `.env` files are committed to the repository.
+
+### 12.4 Database backups
+
+Railway's PostgreSQL includes automated daily backups with a 7-day retention window on paid plans. Enable this before go-live. Document the restore procedure in a separate runbook — not in this document.
+
+### 12.5 Migrations
+
+Prisma migrations are version-controlled in `prisma/migrations/`. They run automatically on each deploy (`prisma migrate deploy`). The migration command is non-destructive — it applies only pending migrations and never drops columns that have data.
+
+> Targets cannot be backdated to a period that already has entries (PRD §4, Flow D). This is enforced at the application layer; there is no database trigger enforcing it.
+
+---
+
+## 13. Architecture Decision Records
+
+### ADR-001 — Full-stack Next.js over separate frontend + backend
+
+**Decision:** Use Next.js 14 (App Router) as a single full-stack framework rather than a separate React frontend and API backend.
+
+**Alternatives considered:**
+- Python (Django/Flask) backend + React frontend — rejected: two deployable units, two codebases, no benefit at this scale.
+- Next.js + a separate Express API — rejected: redundant; Next.js API Routes cover all required server-side logic.
+
+**Rationale:** Single repository, single deployment, one language (TypeScript) throughout. For a ~12-user internal tool with one developer, the reduction in moving parts is the dominant factor.
+
+---
+
+### ADR-002 — Prisma ORM over raw SQL
+
+**Decision:** Use Prisma as the ORM rather than writing raw SQL or using a lighter query builder (e.g. Knex).
+
+**Alternatives considered:**
+- Raw SQL via `pg` driver — rejected: no type safety, schema drift is undetectable at compile time.
+- Drizzle ORM — viable alternative, but Prisma has better documentation and wider community support for a developer who may be new to the stack.
+
+**Rationale:** Type-safe queries, auto-generated migrations, and `schema.prisma` as the single source of truth. The developer writes TypeScript objects; Prisma validates them against the schema at compile time.
+
+---
+
+### ADR-003 — `@react-pdf/renderer` for PDF export
+
+**Decision:** Generate PDFs server-side using `@react-pdf/renderer` rather than browser print-to-PDF or an external PDF service.
+
+**Alternatives considered:**
+- Browser `window.print()` — rejected: layout is browser-dependent, requires a print stylesheet, user sees a dialog.
+- Puppeteer (headless Chrome) — rejected: heavyweight dependency, slow, complex to run on Railway.
+- External PDF API (e.g. DocRaptor) — rejected: external service dependency, cost, data leaves the server.
+
+**Rationale:** `@react-pdf/renderer` is pure Node.js, runs in the Next.js API route, produces deterministic output, and keeps all data server-side. The tradeoff is that it uses its own layout engine (not HTML/CSS), which the developer must learn separately.
+
+---
+
+### ADR-004 — Versioned targets (no overwrite)
+
+**Decision:** `metric_targets` and `revenue_targets` rows are immutable after creation. New targets always insert a new row.
+
+**Alternatives considered:**
+- Mutable target column on `metrics` — rejected: historical reports would retroactively show the wrong target, making past board reports inaccurate.
+- Soft-delete with replacement — rejected: more complex than insert-only, same end result.
+
+**Rationale:** Historical accuracy of reports is a hard requirement. A board report generated in June must show the same numbers if regenerated in December. Immutable target rows, combined with effective-date lookup, guarantee this.
+
+---
+
+### ADR-005 — Railway over alternatives
+
+**Decision:** Host on Railway rather than Vercel + managed Postgres or a self-managed VPS.
+
+**Alternatives considered:**
+- Vercel (Next.js hosting) + Supabase or Neon (Postgres) — viable, but two platforms to manage; Vercel's serverless functions add cold-start latency for PDF generation.
+- Render — viable alternative to Railway; similar pricing and DX.
+- Self-managed VPS (DigitalOcean, Hetzner) — rejected: requires devops knowledge the builder may not have.
+
+**Rationale:** Railway hosts both app and database on one platform, deploys from GitHub automatically, and costs ~$10–20 CAD/month at this scale. Lowest operational overhead for a single-developer project.
+
+---
+
+### ADR-006 — Org-wide revenue status: summed actuals vs. summed targets
+
+**Decision:** The org-wide revenue summary on the dashboard and board report is calculated by summing all `revenue_entries.actual_amount` for the period across all active funder/category pairs, comparing to the sum of all applicable `revenue_targets.target_amount` for the same period, and applying the standard 80%/60% thresholds to the totals.
+
+**Alternatives considered:**
+- Weighted average by target size — rejected: adds complexity with no clear benefit; a $10K grant and a $200K grant would need explicit weighting logic, and there's no obvious correct weight.
+- Worst-case status (show the lowest-performing funder/category as the org status) — rejected: misleading if one small category is off-track while the rest are healthy.
+- Count-based (majority of categories on-track = org on-track) — rejected: ignores dollar amounts entirely; a high-value grant being off-track would not register.
+
+**Rationale:** Summing dollars is the most intuitive answer to "is the org on track fundraising-wise?" It's what a finance lead would calculate manually. Requires no weighting decisions and is consistent with how annual metric targets work (YTD sum vs. target). Implemented in `orgRevenueStatus()` in `lib/domain/revenue.ts`.
+
+---
+
+### ADR-007 — API Routes for all mutations; Server Actions not used
+
+**Decision:** All form submissions and data mutations use Next.js API Routes (under `app/api/`). Server Actions are not used anywhere in the codebase.
+
+**Alternatives considered:**
+- Server Actions for all mutations — rejected: Server Actions in Next.js 14 use an internal fetch mechanism that does not pass through `middleware.ts` in the same way as standard HTTP requests. A builder who implements mutations as Server Actions and assumes middleware provides role enforcement will have no protection on write operations. The failure is silent — no error, just missing enforcement.
+- Server Actions with per-action session checks — rejected: this works, but it creates a second enforcement pattern alongside `middleware.ts`. Every new mutation would require the developer to remember to add the session check manually. One missed check = a privilege escalation bug. A single enforcement point is safer.
+
+**Rationale:** API Routes go through `middleware.ts` reliably and consistently. The `/api/report/pdf` route already establishes this pattern. Extending it to all mutations keeps the security model simple: one enforcement point, one mechanism, no exceptions. The developer ergonomics tradeoff (API Routes require slightly more boilerplate than Server Actions) is worth it for correctness at this scale.
+
+---
+
+These are explicitly not being built. If this list shrinks, flag it as a scope change.
+
+- **Background jobs or queues** — all operations are synchronous request/response. No worker processes.
+- **Caching layer** — no Redis, no in-memory cache. All reads go to PostgreSQL. At ~12 users, this is not a performance concern.
+- **Multi-tenancy** — single organisation, single instance. No `org_id` on any table.
+- **External API integrations** — no calls to third-party services (CRM, Eventbrite, Google Sheets) in v1.
+- **Realtime / WebSockets** — dashboard data is fetched on page load. No live updates.
+- **Mobile native app** — web browser only.
+- **AI-generated content** — ED Notes is a free-text field; no LLM calls in v1.
+- **Audit log** — `entered_by`, `entered_at`, `updated_by`, `updated_at` on relevant tables provide a light audit trail. No dedicated audit log table or log shipping.
+
+---
+
+## 15. Future Evolution Hooks
+
+Compartmentalisation decisions made now so future extensions don't require a rewrite. No code is spent on them.
+
+| Hook | What was done now | Future extension enabled |
+|---|---|---|
+| `lib/domain/` is pure logic | No database dependency in domain functions | AI-assisted narrative (PRD §8) can call the same functions for context |
+| Form field names match DB column names | Fields named consistently with schema | Data import (Google Sheets CSV, CRM sync) can pre-populate forms without changing components |
+| `components/reports/` isolated | PDF components are self-contained | Funder-mandated templates (OQ-5) are new components in the same folder, not changes to existing ones |
+| Versioned target tables | `effective_from` pattern already in schema | Mid-year target changes, multi-year historical reporting — no schema change needed |
+| Auth in `middleware.ts` only | Role-to-route logic is in one file | Multi-tenancy would require adding `org_id` to tables and queries — significant, but current code doesn't actively resist it |
+| `@react-pdf/renderer` in isolated components | PDF logic doesn't touch page components | Additional report templates (foundation-mandated formats) add a new component without touching existing ones |
+
+---
+
+## Open Questions (carried from PRD)
+
+| ID | Question | Blocks |
+|---|---|---|
+| OQ-1 | Specific Theory of Change metrics for each program | Seed data, admin setup in Phase 1 |
+| OQ-2 | Number of programs; shared or separate metric frameworks | Seed data |
+| OQ-5 | Funder-mandated report templates | Phase 4 — if yes, `FunderReport.tsx` may need to be templated per-funder |
+
+OQ-3 and OQ-4 are resolved. See ADR-001 through ADR-007 and PRD §9 design decisions.
+
+---
+*Impact Dashboard ADD v2.0 · Companion to PRD v5.0 · June 2026*
