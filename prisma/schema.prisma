@@ -1,0 +1,195 @@
+// Impact Dashboard — Prisma schema (single source of truth for the DB).
+// Implements all 9 tables from PRD §9 with relationships per ADD §4.2.
+//
+// Immutability convention (ADD §8.3): no app code issues UPDATE/DELETE against
+// metric_targets, revenue_targets, or metric_entries. revenue_entries are the
+// one editable table (Head of Fundraising), logged via updated_by/updated_at.
+//
+// Period columns store the first day of the month at midnight UTC (ADD §4.3).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ed
+  fundraising
+  staff
+  admin
+}
+
+enum TargetPeriod {
+  monthly
+  annual
+}
+
+enum FunderStatus {
+  active
+  prospect
+  lapsed
+}
+
+enum RevenueCategory {
+  grant
+  donation
+  other
+}
+
+model Program {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+
+  metrics        Metric[]
+  funderPrograms FunderProgram[]
+  // Staff users assigned to this program (users.program_id).
+  users          User[]
+
+  @@map("programs")
+}
+
+model Metric {
+  id                String       @id @default(cuid())
+  programId         String       @map("program_id")
+  name              String
+  unit              String
+  targetPeriod      TargetPeriod @map("target_period")
+  // Off-track when actual < target_value × off_track_threshold. Default 0.80.
+  offTrackThreshold Decimal      @default(0.80) @map("off_track_threshold") @db.Decimal(4, 3)
+  isActive          Boolean      @default(true) @map("is_active")
+
+  program Program        @relation(fields: [programId], references: [id])
+  targets MetricTarget[]
+  entries MetricEntry[]
+
+  @@index([programId])
+  @@map("metrics")
+}
+
+// Versioned targets — insert-only (ADD §8.3 / ADR-004). Never overwritten.
+model MetricTarget {
+  id            String   @id @default(cuid())
+  metricId      String   @map("metric_id")
+  targetValue   Decimal  @map("target_value") @db.Decimal(14, 2)
+  effectiveFrom DateTime @map("effective_from") @db.Date
+  setBy         String   @map("set_by")
+  setAt         DateTime @default(now()) @map("set_at")
+
+  metric Metric @relation(fields: [metricId], references: [id])
+  setByUser User @relation("MetricTargetSetBy", fields: [setBy], references: [id])
+
+  @@index([metricId, effectiveFrom])
+  @@map("metric_targets")
+}
+
+// Immutable after creation (PRD Flow E; ADD §8.3).
+model MetricEntry {
+  id          String   @id @default(cuid())
+  metricId    String   @map("metric_id")
+  period      DateTime @db.Date
+  actualValue Decimal  @map("actual_value") @db.Decimal(14, 2)
+  enteredBy   String   @map("entered_by")
+  enteredAt   DateTime @default(now()) @map("entered_at")
+
+  metric Metric @relation(fields: [metricId], references: [id])
+  enteredByUser User @relation("MetricEntryEnteredBy", fields: [enteredBy], references: [id])
+
+  // One entry per metric per period.
+  @@unique([metricId, period])
+  @@index([metricId])
+  @@map("metric_entries")
+}
+
+model Funder {
+  id            String       @id @default(cuid())
+  name          String
+  grantAmount   Decimal      @map("grant_amount") @db.Decimal(14, 2)
+  status        FunderStatus @default(prospect)
+  renewalDate   DateTime?    @map("renewal_date") @db.Date
+  reportDueDate DateTime?    @map("report_due_date") @db.Date
+  notes         String?
+
+  funderPrograms FunderProgram[]
+  revenueTargets RevenueTarget[]
+  revenueEntries RevenueEntry[]
+
+  @@map("funders")
+}
+
+model FunderProgram {
+  funderId  String @map("funder_id")
+  programId String @map("program_id")
+
+  funder  Funder  @relation(fields: [funderId], references: [id])
+  program Program @relation(fields: [programId], references: [id])
+
+  @@id([funderId, programId])
+  @@index([programId])
+  @@map("funder_programs")
+}
+
+// Versioned revenue targets — insert-only. funder_id nullable for general donations.
+model RevenueTarget {
+  id            String          @id @default(cuid())
+  funderId      String?         @map("funder_id")
+  category      RevenueCategory
+  targetAmount  Decimal         @map("target_amount") @db.Decimal(14, 2)
+  targetPeriod  TargetPeriod    @map("target_period")
+  effectiveFrom DateTime        @map("effective_from") @db.Date
+  setBy         String          @map("set_by")
+  setAt         DateTime        @default(now()) @map("set_at")
+
+  funder    Funder? @relation(fields: [funderId], references: [id])
+  setByUser User    @relation("RevenueTargetSetBy", fields: [setBy], references: [id])
+
+  @@index([funderId, category, effectiveFrom])
+  @@map("revenue_targets")
+}
+
+// Editable by Head of Fundraising; edits logged via updated_by/updated_at (ADD §8.3).
+model RevenueEntry {
+  id           String          @id @default(cuid())
+  funderId     String?         @map("funder_id")
+  category     RevenueCategory
+  period       DateTime        @db.Date
+  actualAmount Decimal         @map("actual_amount") @db.Decimal(14, 2)
+  enteredBy    String          @map("entered_by")
+  enteredAt    DateTime        @default(now()) @map("entered_at")
+  updatedBy    String?         @map("updated_by")
+  updatedAt    DateTime?       @map("updated_at")
+
+  funder        Funder? @relation(fields: [funderId], references: [id])
+  enteredByUser User    @relation("RevenueEntryEnteredBy", fields: [enteredBy], references: [id])
+  updatedByUser User?   @relation("RevenueEntryUpdatedBy", fields: [updatedBy], references: [id])
+
+  // One actual per funder/category/period (general donations: funder_id null).
+  @@unique([funderId, category, period])
+  @@index([funderId, category, period])
+  @@map("revenue_entries")
+}
+
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String  @map("password_hash")
+  role         Role
+  // Required at the app layer when role = staff; nullable column otherwise.
+  programId    String? @map("program_id")
+
+  program Program? @relation(fields: [programId], references: [id])
+
+  // Audit back-relations (named to disambiguate multiple FKs to User).
+  metricTargetsSet  MetricTarget[]  @relation("MetricTargetSetBy")
+  metricEntries     MetricEntry[]   @relation("MetricEntryEnteredBy")
+  revenueTargetsSet RevenueTarget[] @relation("RevenueTargetSetBy")
+  revenueEntered    RevenueEntry[]  @relation("RevenueEntryEnteredBy")
+  revenueUpdated    RevenueEntry[]  @relation("RevenueEntryUpdatedBy")
+
+  @@map("users")
+}
