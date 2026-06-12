@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { createElement } from "react";
 import { renderToBuffer } from "@react-pdf/renderer";
 import BoardReport from "@/components/reports/BoardReport";
 import FunderReport from "@/components/reports/FunderReport";
@@ -77,7 +76,7 @@ describe("report PDF smoke (ACE-27)", () => {
       deadlines: [{ name: "Foundation X", date: "2026-04-15", flag: "red" }],
     };
 
-    const buffer = await renderToBuffer(createElement(BoardReport, { data }));
+    const buffer = await renderToBuffer(<BoardReport data={data} />);
     expect(buffer.length).toBeGreaterThan(1000);
     expect(buffer.subarray(0, 5).toString("latin1")).toBe(PDF_MAGIC);
   });
@@ -98,7 +97,7 @@ describe("report PDF smoke (ACE-27)", () => {
       nextDeadline: { renewal: "2026-12-01", reportDue: "2026-04-15" },
     };
 
-    const buffer = await renderToBuffer(createElement(FunderReport, { data }));
+    const buffer = await renderToBuffer(<FunderReport data={data} />);
     expect(buffer.length).toBeGreaterThan(1000);
     expect(buffer.subarray(0, 5).toString("latin1")).toBe(PDF_MAGIC);
   });
@@ -125,7 +124,7 @@ describe("report PDF smoke (ACE-27)", () => {
       deadlines: [],
     };
 
-    const buffer = await renderToBuffer(createElement(BoardReport, { data }));
+    const buffer = await renderToBuffer(<BoardReport data={data} />);
     expect(buffer.length).toBeGreaterThan(1000);
     expect(buffer.subarray(0, 5).toString("latin1")).toBe(PDF_MAGIC);
   });

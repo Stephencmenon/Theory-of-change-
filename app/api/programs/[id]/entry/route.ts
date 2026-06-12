@@ -18,16 +18,17 @@ export async function POST(
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let raw: any;
+  let raw: unknown;
   try {
     raw = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+  const rawEntries = (raw as { entries?: unknown } | null)?.entries;
   const submitted: { metricId: string; actualValue: unknown }[] = Array.isArray(
-    raw?.entries,
+    rawEntries,
   )
-    ? raw.entries
+    ? (rawEntries as { metricId: string; actualValue: unknown }[])
     : [];
 
   // Current period, first-of-month midnight UTC.
