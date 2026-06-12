@@ -14,7 +14,10 @@ const NAV: Record<AppRole, { href: string; label: string }[]> = {
     { href: "/revenue", label: "Revenue" },
     { href: "/report", label: "Reports" },
   ],
-  admin: [{ href: "/admin", label: "Admin" }],
+  admin: [
+    { href: "/admin", label: "Admin" },
+    { href: "/funders", label: "Funders" },
+  ],
   staff: [],
 };
 

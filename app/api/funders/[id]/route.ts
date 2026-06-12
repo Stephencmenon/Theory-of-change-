@@ -10,7 +10,7 @@ export async function PATCH(
   req: Request,
   { params }: { params: { id: string } },
 ) {
-  const auth = await requireApiRole(["ed", "fundraising"]);
+  const auth = await requireApiRole(["ed", "fundraising", "admin"]);
   if (auth instanceof NextResponse) return auth;
 
   const body = await readJson(req, funderUpdateSchema);

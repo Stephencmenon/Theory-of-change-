@@ -3,17 +3,19 @@ import { prisma } from "@/lib/prisma";
 
 // Screen 8 — /admin overview. Four sub-sections with live counts (PRD Flow D).
 export default async function AdminOverviewPage() {
-  const [programs, metrics, users] = await Promise.all([
+  const [programs, metrics, users, funders] = await Promise.all([
     prisma.program.count(),
     prisma.metric.count(),
     prisma.user.count(),
+    prisma.funder.count(),
   ]);
 
   const cards = [
-    { slug: "programs", label: "Programs", count: programs, blurb: "Create and edit programs." },
-    { slug: "metrics", label: "Metrics", count: metrics, blurb: "Add metrics with initial targets and thresholds." },
-    { slug: "users", label: "Users", count: users, blurb: "Create users and assign roles." },
-    { slug: "targets", label: "Targets", count: null, blurb: "Set new versioned metric targets." },
+    { href: "/admin/programs", label: "Programs", count: programs, blurb: "Create and edit programs." },
+    { href: "/admin/metrics", label: "Metrics", count: metrics, blurb: "Add metrics with initial targets and thresholds." },
+    { href: "/admin/users", label: "Users", count: users, blurb: "Create users and assign roles." },
+    { href: "/admin/targets", label: "Targets", count: null, blurb: "Set new versioned metric targets." },
+    { href: "/funders", label: "Funders", count: funders, blurb: "Manage funders, deadlines and linked programs." },
   ];
 
   return (
@@ -22,8 +24,8 @@ export default async function AdminOverviewPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         {cards.map((c) => (
           <Link
-            key={c.slug}
-            href={`/admin/${c.slug}`}
+            key={c.href}
+            href={c.href}
             className="rounded-lg border border-gray-200 bg-white p-5 hover:border-gray-400"
           >
             <div className="flex items-baseline justify-between">

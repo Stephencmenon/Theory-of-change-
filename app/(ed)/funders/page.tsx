@@ -20,7 +20,7 @@ function nextDeadline(
 
 // Screen 4 — /funders. ED + Head of Fundraising.
 export default async function FundersPage() {
-  await requireRole(["ed", "fundraising"]);
+  await requireRole(["ed", "fundraising", "admin"]);
   const today = new Date();
 
   const funders = await prisma.funder.findMany({ orderBy: { name: "asc" } });

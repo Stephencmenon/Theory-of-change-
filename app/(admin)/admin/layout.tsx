@@ -34,6 +34,13 @@ export default async function AdminLayout({
                   {s.label}
                 </Link>
               ))}
+              {/* Funder management is shared with ED/Fundraising at /funders. */}
+              <Link
+                href="/funders"
+                className="text-sm text-gray-600 hover:text-gray-900"
+              >
+                Funders
+              </Link>
             </nav>
           </div>
           <SignOutButton />

@@ -18,13 +18,13 @@ interface RouteRule {
 const ROUTE_RULES: RouteRule[] = [
   { pattern: /^\/dashboard(\/|$)/, roles: ["ed"] },
   { pattern: /^\/report(\/|$)/, roles: ["ed", "fundraising"] },
-  { pattern: /^\/funders(\/|$)/, roles: ["ed", "fundraising"] },
+  { pattern: /^\/funders(\/|$)/, roles: ["ed", "fundraising", "admin"] },
   { pattern: /^\/revenue(\/|$)/, roles: ["fundraising"] },
   { pattern: /^\/programs\/[^/]+\/entry(\/|$)/, roles: ["staff"] },
   { pattern: /^\/admin(\/|$)/, roles: ["admin"] },
 
   { pattern: /^\/api\/report\/pdf(\/|$)/, roles: ["ed", "fundraising"] },
-  { pattern: /^\/api\/funders(\/|$)/, roles: ["ed", "fundraising"] },
+  { pattern: /^\/api\/funders(\/|$)/, roles: ["ed", "fundraising", "admin"] },
   { pattern: /^\/api\/revenue(\/|$)/, roles: ["fundraising"] },
   { pattern: /^\/api\/programs\/[^/]+\/entry(\/|$)/, roles: ["staff"] },
   { pattern: /^\/api\/admin(\/|$)/, roles: ["admin"] },
