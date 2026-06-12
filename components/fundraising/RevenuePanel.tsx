@@ -60,7 +60,7 @@ export default function RevenuePanel({
     setActualBusy(true);
     setActualFields({});
     setActualMsg(null);
-    const res = await postJson("/api/revenue/entries", {
+    const res = await postJson<{ edited?: boolean }>("/api/revenue/entries", {
       funderId: funderValue(actual.funder),
       category: actual.category,
       period: actual.period,
@@ -73,7 +73,7 @@ export default function RevenuePanel({
       return;
     }
     setActual((a) => ({ ...a, actualAmount: "" }));
-    setActualMsg((res.data as any)?.edited ? "Actual updated." : "Actual saved.");
+    setActualMsg(res.data?.edited ? "Actual updated." : "Actual saved.");
     router.refresh();
   }
 

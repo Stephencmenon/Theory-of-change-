@@ -11,19 +11,24 @@ async function send<T>(method: string, url: string, body?: unknown): Promise<Mut
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  let json: any = null;
+  let json: unknown = null;
   try {
     json = await res.json();
   } catch {
     /* empty body */
   }
   if (res.ok) return { ok: true, data: json as T };
+  const err = (json ?? {}) as {
+    error?: string;
+    fields?: Record<string, string>;
+    nextAction?: string;
+  };
   return {
     ok: false,
     status: res.status,
-    error: json?.error ?? `Request failed (${res.status})`,
-    fields: json?.fields,
-    nextAction: json?.nextAction,
+    error: err.error ?? `Request failed (${res.status})`,
+    fields: err.fields,
+    nextAction: err.nextAction,
   };
 }
 
