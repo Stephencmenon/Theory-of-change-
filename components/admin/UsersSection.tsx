@@ -83,6 +83,32 @@ export default function UsersSection({
     router.refresh();
   }
 
+  async function resetPassword(u: User) {
+    const pw = window.prompt(
+      `Set a new password for ${u.email} (min 8 characters):`,
+      "",
+    );
+    if (pw === null) return; // cancelled
+    if (pw.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    const confirmed = window.confirm(
+      `Reset the password for ${u.email}? They will need the new password to sign in.`,
+    );
+    if (!confirmed) return;
+    const res = await patchJson(`/api/admin/users/${u.id}/password`, {
+      password: pw,
+      confirm: true,
+    });
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    setError(null);
+    window.alert(`Password updated for ${u.email}.`);
+  }
+
   return (
     <div>
       <h1 className="mb-6 text-2xl font-semibold text-gray-900">Users</h1>
@@ -161,6 +187,7 @@ export default function UsersSection({
             <th className="py-2">Role</th>
             <th className="py-2">Program</th>
             <th className="py-2">Change role</th>
+            <th className="py-2">Password</th>
           </tr>
         </thead>
         <tbody>
@@ -182,11 +209,20 @@ export default function UsersSection({
                   ))}
                 </select>
               </td>
+              <td className="py-2">
+                <button
+                  type="button"
+                  onClick={() => resetPassword(u)}
+                  className="rounded-md border border-gray-300 px-2 py-1 text-sm text-gray-700 hover:border-gray-400"
+                >
+                  Reset
+                </button>
+              </td>
             </tr>
           ))}
           {users.length === 0 && (
             <tr>
-              <td colSpan={4} className="py-4 text-gray-400">
+              <td colSpan={5} className="py-4 text-gray-400">
                 No users yet.
               </td>
             </tr>
