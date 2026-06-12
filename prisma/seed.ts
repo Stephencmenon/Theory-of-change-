@@ -6,11 +6,16 @@
 // fresh seed regardless of when it runs. All users share the password below
 // (dev only).
 
+import { randomBytes } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
-const PASSWORD = "Passw0rd!";
+
+// Secure by default: use SEED_PASSWORD when provided (handy for local dev),
+// otherwise generate a strong random password so a production seed never ships
+// a publicly-known credential. The value is printed once at the end of the run.
+const PASSWORD = process.env.SEED_PASSWORD ?? randomBytes(12).toString("base64url");
 
 // First-of-month UTC helper (mirrors lib/domain/periods toPeriodDate).
 const period = (year: number, month: number) =>

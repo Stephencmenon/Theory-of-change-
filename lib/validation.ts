@@ -75,6 +75,15 @@ export const userCreateSchema = z
     }
   });
 
+// Admin-initiated password reset. Requires explicit confirmation, mirroring the
+// role-change flow. The new password is bcrypt-hashed server-side.
+export const userPasswordResetSchema = z.object({
+  password: z.string().min(8, "Password must be at least 8 characters"),
+  confirm: z.literal(true, {
+    errorMap: () => ({ message: "Password reset must be explicitly confirmed" }),
+  }),
+});
+
 export const userRoleChangeSchema = z
   .object({
     role: roleEnum,

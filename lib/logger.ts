@@ -5,7 +5,8 @@
 type SecurityEvent =
   | "auth_failure"
   | "unauthorized_route"
-  | "pdf_export_error";
+  | "pdf_export_error"
+  | "password_reset";
 
 interface LogFields {
   event: SecurityEvent;
