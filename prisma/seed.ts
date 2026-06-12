@@ -2,7 +2,9 @@
 // Run after `prisma migrate reset --force`, or via `npm run seed`.
 //
 // Placeholder Theory of Change metrics until OQ-1/OQ-2 land the real ones.
-// All users share the password below (dev only).
+// Data is anchored to the current month so the dashboard is populated on a
+// fresh seed regardless of when it runs. All users share the password below
+// (dev only).
 
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
@@ -16,6 +18,17 @@ const period = (year: number, month: number) =>
 
 async function main() {
   const passwordHash = await bcrypt.hash(PASSWORD, 10);
+
+  // Anchor all seed data to the CURRENT calendar year/month so the dashboard's
+  // default view (current month) is populated rather than showing "No data
+  // entered". Entries run January → the current month; targets are effective
+  // from January 1, so they apply to every seeded period.
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const thisMonth = now.getUTCMonth() + 1; // 1-based current month
+  const monthsYtd = Array.from({ length: thisMonth }, (_, i) => i + 1); // [1..thisMonth]
+  const targetEffective = period(year, 1);
+  const inDays = (n: number) => new Date(now.getTime() + n * 24 * 60 * 60 * 1000);
 
   // --- Program -------------------------------------------------------------
   const program = await prisma.program.create({
@@ -45,7 +58,7 @@ async function main() {
     },
   });
 
-  // --- Metrics (+ initial targets, effective Jan 2026) ---------------------
+  // --- Metrics (+ initial targets, effective Jan of the current year) ------
   const metricSpecs = [
     { name: "Clients served", unit: "people", targetPeriod: "monthly" as const, threshold: 0.8, target: 100 },
     { name: "Employment placements", unit: "people", targetPeriod: "monthly" as const, threshold: 0.75, target: 20 },
@@ -67,47 +80,49 @@ async function main() {
       data: {
         metricId: metric.id,
         targetValue: m.target,
-        effectiveFrom: period(2026, 1),
+        effectiveFrom: targetEffective,
         setBy: admin.id,
       },
     });
     metrics.push(metric);
   }
 
-  // --- Sample metric entries (Jan–Apr 2026) --------------------------------
-  // "Clients served": present, mostly on-track; April dips off-track.
+  // --- Sample metric entries (Jan → current month) -------------------------
+  // Deterministic values keyed off the month number so every run is stable and
+  // the current month always has data. "Clients served" (target 100, off-track
+  // < 80): one mid-year month deliberately dips to show the red flag.
   const clients = metrics[0];
-  const clientsByMonth = [95, 102, 88, 60]; // Jan..Apr; Apr (60 < 100×0.8) off-track
-  for (let i = 0; i < clientsByMonth.length; i++) {
+  for (const mo of monthsYtd) {
+    const value = mo === 4 ? 72 : 90 + ((mo * 7) % 18); // month 4 off-track (<80)
     await prisma.metricEntry.create({
       data: {
         metricId: clients.id,
-        period: period(2026, i + 1),
-        actualValue: clientsByMonth[i],
+        period: period(year, mo),
+        actualValue: value,
         enteredBy: staff.id,
       },
     });
   }
-  // "Employment placements": partial — only Jan, Feb (March/April show "No data entered").
+  // "Employment placements" (target 20, off-track < 15): on-track every month.
   const placements = metrics[1];
-  for (let i = 0; i < 2; i++) {
+  for (const mo of monthsYtd) {
     await prisma.metricEntry.create({
       data: {
         metricId: placements.id,
-        period: period(2026, i + 1),
-        actualValue: [18, 22][i],
+        period: period(year, mo),
+        actualValue: 16 + ((mo * 3) % 7), // 16..22
         enteredBy: staff.id,
       },
     });
   }
-  // "Training hours" (annual): a couple of months of entries → YTD sum.
+  // "Training hours" (annual): a value each month → YTD sum on the dashboard.
   const training = metrics[2];
-  for (let i = 0; i < 3; i++) {
+  for (const mo of monthsYtd) {
     await prisma.metricEntry.create({
       data: {
         metricId: training.id,
-        period: period(2026, i + 1),
-        actualValue: [120, 140, 110][i],
+        period: period(year, mo),
+        actualValue: 110 + ((mo * 5) % 30), // 110..139
         enteredBy: staff.id,
       },
     });
@@ -119,8 +134,8 @@ async function main() {
       name: "Maple Foundation",
       grantAmount: 50000,
       status: "active",
-      renewalDate: period(2026, 9),
-      reportDueDate: new Date(Date.UTC(2026, 6, 15)), // 2026-07-15
+      renewalDate: inDays(80), // ~80 days out → yellow window
+      reportDueDate: inDays(20), // ~20 days out → red window
       notes: "Multi-year employment grant.",
     },
   });
@@ -128,7 +143,7 @@ async function main() {
     data: { funderId: funder.id, programId: program.id },
   });
 
-  // --- Revenue targets (versioned, effective Jan 2026) ---------------------
+  // --- Revenue targets (versioned, effective Jan of the current year) ------
   // Funder-specific grant target.
   await prisma.revenueTarget.create({
     data: {
@@ -136,7 +151,7 @@ async function main() {
       category: "grant",
       targetAmount: 50000,
       targetPeriod: "annual",
-      effectiveFrom: period(2026, 1),
+      effectiveFrom: targetEffective,
       setBy: admin.id,
     },
   });
@@ -147,18 +162,18 @@ async function main() {
       category: "donation",
       targetAmount: 2000,
       targetPeriod: "monthly",
-      effectiveFrom: period(2026, 1),
+      effectiveFrom: targetEffective,
       setBy: admin.id,
     },
   });
 
-  // --- Revenue entries -----------------------------------------------------
+  // --- Revenue entries (current month → dashboard populates by default) -----
   await prisma.revenueEntry.create({
     data: {
       funderId: funder.id,
       category: "grant",
-      period: period(2026, 1),
-      actualAmount: 25000,
+      period: period(year, thisMonth),
+      actualAmount: 30000, // vs 50k annual grant target → at-risk
       enteredBy: admin.id,
     },
   });
@@ -166,8 +181,8 @@ async function main() {
     data: {
       funderId: null,
       category: "donation",
-      period: period(2026, 1),
-      actualAmount: 1500,
+      period: period(year, thisMonth),
+      actualAmount: 1800, // vs 2k monthly donation target → on-track
       enteredBy: admin.id,
     },
   });
