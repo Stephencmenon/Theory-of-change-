@@ -43,7 +43,7 @@ export default async function DashboardPage({
 }: {
   searchParams: { period?: string };
 }) {
-  await requireRole(["ed"]);
+  await requireRole(["ed", "admin"]);
 
   const now = new Date();
   const period =

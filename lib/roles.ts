@@ -16,7 +16,7 @@ interface RouteRule {
 // routes are matched here for completeness, but middleware enforces the
 // id-equals-session.programId rule separately before consulting this table.
 const ROUTE_RULES: RouteRule[] = [
-  { pattern: /^\/dashboard(\/|$)/, roles: ["ed"] },
+  { pattern: /^\/dashboard(\/|$)/, roles: ["ed", "admin"] },
   { pattern: /^\/report(\/|$)/, roles: ["ed", "fundraising"] },
   { pattern: /^\/funders(\/|$)/, roles: ["ed", "fundraising", "admin"] },
   { pattern: /^\/revenue(\/|$)/, roles: ["fundraising"] },

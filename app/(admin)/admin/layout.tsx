@@ -25,6 +25,13 @@ export default async function AdminLayout({
               Admin
             </Link>
             <nav className="flex gap-4">
+              {/* Consolidated read-only view of all configured data. */}
+              <Link
+                href="/dashboard"
+                className="text-sm text-gray-600 hover:text-gray-900"
+              >
+                Dashboard
+              </Link>
               {SECTIONS.map((s) => (
                 <Link
                   key={s.slug}
