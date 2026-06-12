@@ -13,7 +13,7 @@ export default async function FunderDetailPage({
 }: {
   params: { id: string };
 }) {
-  await requireRole(["ed", "fundraising"]);
+  await requireRole(["ed", "fundraising", "admin"]);
 
   const funder = await prisma.funder.findUnique({
     where: { id: params.id },

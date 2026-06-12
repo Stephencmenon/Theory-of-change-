@@ -7,7 +7,7 @@ const toDate = (s?: string | null) => (s ? new Date(`${s}T00:00:00.000Z`) : null
 
 // POST /api/funders — create a funder (ED or Head of Fundraising).
 export async function POST(req: Request) {
-  const auth = await requireApiRole(["ed", "fundraising"]);
+  const auth = await requireApiRole(["ed", "fundraising", "admin"]);
   if (auth instanceof NextResponse) return auth;
 
   const body = await readJson(req, funderCreateSchema);
